@@ -8,8 +8,10 @@ using namespace std;
 int indentLevel = 0;
 
 string getIndent() {
+    if (indentLevel < 0) indentLevel = 0;
     return string(indentLevel * 4, ' ');
 }
+
 
 void parseExpression(const string& line) {
     smatch matches;
@@ -83,12 +85,16 @@ void parseExpression(const string& line) {
             // If this is the final closing brace of the full if-else
             static int ifBranchCount = 0;
             ifBranchCount++;
-            if (ifBranchCount == 2) { // both if and else closed
-                indentLevel--; // close if block
+            if (ifBranchCount == 2) {
+                if (indentLevel > 0) indentLevel--;
                 cout << getIndent() << "fi" << endl;
                 insideIfElse = false;
                 ifBranchCount = 0;
+            
+                if (indentLevel > 0) indentLevel--;
+                cout << getIndent() << "}" << endl;
             }
+            
             return;
         } else {
             // Normal function or init block
