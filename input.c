@@ -6,6 +6,3 @@ void foo() {
         x = x + 1;
     }
 }
-int main() {
-    foo();
-}

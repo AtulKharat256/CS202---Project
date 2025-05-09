@@ -18,9 +18,19 @@ void parseExpression(const string& line) {
     string trimmed = regex_replace(line, regex("^\\s+|\\s+$"), "");
     static bool insideIfElse = false;
 
-    regex if_pattern(R"(\s*if\s*\((.+)\)\s*\{)");
+    regex if_pattern(R"(\s*if\s*\(([^)]+)\)\s*\{)");
     regex else_pattern(R"(\s*else\s*\{)");
 
+    // Struct handling state
+    static bool insideStruct = false;
+    static string currentStructName;
+
+    // Struct and array support
+    regex struct_start(R"(\s*struct\s+(\w+)\s*\{)");
+    regex struct_field(R"(\s*(int|byte|short|bool)\s+(\w+)\s*;)");
+    regex struct_end(R"(\s*\};)");
+    regex struct_array_decl(R"(\s*struct\s+(\w+)\s+(\w+)\[(\d+)\];)");
+    regex array_decl(R"((int|byte|short|bool)\s+(\w+)\[(\d+)\];)");
 
     // Function definition: void foo() {
     regex func_pattern(R"((?:void|int|byte|bool|short)\s+(\w+)\s*\(\s*\)\s*\{)");
@@ -30,6 +40,43 @@ void parseExpression(const string& line) {
         indentLevel++;
         return;
     }
+
+    if (regex_search(trimmed, matches, struct_start)) {
+        currentStructName = matches[1];
+        cout << getIndent() << "typedef " << currentStructName << " {" << endl;
+        indentLevel++;
+        insideStruct = true;
+        return;
+    }
+    if (insideStruct && regex_search(trimmed, matches, struct_field)) {
+        cout << getIndent() << matches[1] << " " << matches[2] << ";" << endl;
+        return;
+    }
+    
+    if (insideStruct && regex_search(trimmed, matches, struct_end)) {
+        indentLevel--;
+        cout << getIndent() << "}" << endl;
+        insideStruct = false;
+        currentStructName.clear();
+        return;
+    }
+    
+    if (regex_search(trimmed, matches, struct_array_decl)) {
+        string typename_ = matches[1];
+        string varname = matches[2];
+        string size = matches[3];
+        cout << getIndent() << typename_ << " " << varname << "[" << size << "];" << endl;
+        return;
+    }
+    
+    if (regex_search(trimmed, matches, array_decl)) {
+        string type = matches[1];
+        string varname = matches[2];
+        string size = matches[3];
+        cout << getIndent() << type << " " << varname << "[" << size << "];" << endl;
+        return;
+    }
+    
 
     // Main function: int main() {
     regex main_pattern(R"(int\s+main\s*\(\s*\)\s*\{)");

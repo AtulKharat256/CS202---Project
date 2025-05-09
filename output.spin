@@ -7,6 +7,3 @@ proctype foo() {
             x = x + 1;
 fi
 }
-proctype main() {
-    run foo();
-}
