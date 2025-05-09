@@ -1,9 +1,14 @@
-proctype foo() {
+proctype check() {
     x = 5;
     if
         :: (x > 0) ->
-            x = x - 1;
-        :: else ->
-            x = x + 1;
-fi
+            if
+                :: (x > 3) ->
+                    x = 1;
+                :: else ->
+                    x = 2;
+            :: else ->
+                x = 0;
+        fi
+    }
 }

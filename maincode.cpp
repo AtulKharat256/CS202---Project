@@ -188,5 +188,18 @@ int main() {
     outfile.close();
 
     cout << "✅ Translation complete. Output saved to: output.spin" << endl;
+    ifstream result("output.spin");
+    if (!result.is_open()) {
+        cerr << "Error: Could not read back output.spin" << endl;
+        return 1;
+    }
+
+    cout << "\n🔍 Final Output in output.spin:\n\n";
+    string lineOut;
+    while (getline(result, lineOut)) {
+        cout << lineOut << endl;
+    }
+    result.close();
+
     return 0;
 }
