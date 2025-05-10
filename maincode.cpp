@@ -15,6 +15,10 @@ string getIndent() {
 
 void parseExpression(const string& line) {
     smatch matches;
+    static bool insideSwitch = false;
+    static string switchVar;
+    static vector<string> pendingCases;
+
     string trimmed = regex_replace(line, regex("^\\s+|\\s+$"), "");
     static bool insideIfElse = false;
 
@@ -24,6 +28,82 @@ void parseExpression(const string& line) {
     // Struct handling state
     static bool insideStruct = false;
     static string currentStructName;
+    regex switch_pattern(R"(\s*switch\s*\(\s*(\w+)\s*\)\s*\{)");
+    regex case_pattern(R"(\s*case\s+(\d+)\s*:\s*)");
+    regex default_pattern(R"(\s*default\s*:\s*)");
+    
+    if (regex_search(trimmed, matches, switch_pattern)) {
+        switchVar = matches[1];
+        cout << getIndent() << "if" << endl;
+        indentLevel++;
+        insideSwitch = true;
+        pendingCases.clear();
+        return;
+    }
+    if (insideSwitch && regex_search(trimmed, matches, case_pattern)) {
+        pendingCases.push_back(matches[1]);
+        return;
+    }
+
+    if (insideSwitch && regex_search(trimmed, matches, default_pattern)) {
+        if (!pendingCases.empty()) {
+            // Flush pending cases before default
+            cout << getIndent() << ":: (";
+            for (size_t i = 0; i < pendingCases.size(); ++i) {
+                if (i > 0) cout << " || ";
+                cout << switchVar << " == " << pendingCases[i];
+            }
+            cout << ") ->" << endl;
+            indentLevel++;
+            pendingCases.clear();
+        }
+        if (insideSwitch) indentLevel--;
+        cout << getIndent() << ":: else ->" << endl;
+        indentLevel++;
+        return;
+    }
+
+
+    regex inc_pattern(R"((\w+)\s*\+\+\s*;)");
+    regex dec_pattern(R"((\w+)\s*\-\-\s*;)");
+    // Match a++;
+    if (regex_search(trimmed, matches, inc_pattern)) {
+        if (insideSwitch && !pendingCases.empty()) {
+            cout << getIndent() << ":: (";
+            for (size_t i = 0; i < pendingCases.size(); ++i) {
+                if (i > 0) cout << " || ";
+                cout << switchVar << " == " << pendingCases[i];
+            }
+            cout << ") ->" << endl;
+            indentLevel++;
+            pendingCases.clear();
+        }
+
+        string var = matches[1];
+        cout << getIndent() << var << "++;" << endl;
+        if (insideSwitch) indentLevel--;
+        return;
+    }
+
+
+    // Match a--;
+    if (regex_search(trimmed, matches, dec_pattern)) {
+        if (insideSwitch && !pendingCases.empty()) {
+            cout << getIndent() << ":: (";
+            for (size_t i = 0; i < pendingCases.size(); ++i) {
+                if (i > 0) cout << " || ";
+                cout << switchVar << " == " << pendingCases[i];
+            }
+            cout << ") ->" << endl;
+            indentLevel++;
+            pendingCases.clear();
+        }
+
+        string var = matches[1];
+        cout << getIndent() << var << "--;" << endl;
+        if (insideSwitch) indentLevel--;
+        return;
+    }
 
     // Struct and array support
     regex struct_start(R"(\s*struct\s+(\w+)\s*\{)");
@@ -40,6 +120,32 @@ void parseExpression(const string& line) {
         indentLevel++;
         return;
     }
+        // Ternary conditional: a = (b > c) ? b : c;
+    regex ternary_pattern(R"((\w+)\s*=\s*\(([^)]+)\)\s*\?\s*([^:]+)\s*:\s*(.+);)");
+    if (regex_search(trimmed, matches, ternary_pattern)) {
+        string lhs = matches[1];
+        string condition = matches[2];
+        string true_val = matches[3];
+        string false_val = matches[4];
+
+        cout << getIndent() << "if" << endl;
+        indentLevel++;
+        cout << getIndent() << ":: (" << condition << ") ->" << endl;
+        indentLevel++;
+        cout << getIndent() << lhs << " = " << true_val << ";" << endl;
+        indentLevel--;  // End true branch
+
+        cout << getIndent() << ":: else ->" << endl;
+        indentLevel++;
+        cout << getIndent() << lhs << " = " << false_val << ";" << endl;
+        indentLevel--;  // End false branch
+
+        indentLevel--;  // End if block
+        cout << getIndent() << "fi" << endl;
+
+        return;
+    }
+
 
     if (regex_search(trimmed, matches, struct_start)) {
         currentStructName = matches[1];
@@ -110,22 +216,55 @@ void parseExpression(const string& line) {
     // Function call: foo();
     regex call_pattern(R"((\w+)\s*\(\s*\)\s*;)");
     if (regex_search(trimmed, matches, call_pattern)) {
+        if (insideSwitch && !pendingCases.empty()) {
+            cout << getIndent() << ":: (";
+            for (size_t i = 0; i < pendingCases.size(); ++i) {
+                if (i > 0) cout << " || ";
+                cout << switchVar << " == " << pendingCases[i];
+            }
+            cout << ") ->" << endl;
+            indentLevel++;
+            pendingCases.clear();
+        }
+
         string called_func = matches[1];
         cout << getIndent() << "run " << called_func << "();" << endl;
+        if (insideSwitch) indentLevel--;
         return;
     }
+
 
     // Assignment expression: a = b + c;
     regex expr_pattern(R"((\w+)\s*=\s*(.+);)");
     if (regex_search(trimmed, matches, expr_pattern)) {
+        if (insideSwitch && !pendingCases.empty()) {
+            cout << getIndent() << ":: (";
+            for (size_t i = 0; i < pendingCases.size(); ++i) {
+                if (i > 0) cout << " || ";
+                cout << switchVar << " == " << pendingCases[i];
+            }
+            cout << ") ->" << endl;
+            indentLevel++;
+            pendingCases.clear();
+        }
+
         string lhs = matches[1];
         string rhs = matches[2];
         cout << getIndent() << lhs << " = " << rhs << ";" << endl;
+        if (insideSwitch) indentLevel--;
         return;
     }
 
     // Closing brace: }
     if (trimmed == "}") {
+        if (insideSwitch) {
+        if (indentLevel > 0) indentLevel--;
+        cout << getIndent() << "fi" << endl;
+        insideSwitch = false;
+        pendingCases.clear();
+        return;
+    }
+
         if (insideIfElse) {
             // We're closing a branch (if or else), not a normal block
             indentLevel--;  // close :: branch
