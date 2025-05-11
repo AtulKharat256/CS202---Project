@@ -1,8 +1,3 @@
-if
-    :: (flag == 0) ->
-        tries++;
-    :: (flag == 1) ->
-        retries--;
-:: else ->
-    done = 1;
-fi
+typedef MyS {
+    MyS arr2[3];
+    arr2[1].a++;

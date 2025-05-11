@@ -2,6 +2,9 @@
 #include <fstream>
 #include <regex>
 #include <string>
+#include <vector>
+#include <sstream>    // ← add this at the top with your other includes
+
 
 using namespace std;
 
@@ -15,23 +18,97 @@ string getIndent() {
 
 void parseExpression(const string& line) {
     smatch matches;
+    // Track nested loops
+    static vector<string> loopStack;
+
     static bool insideSwitch = false;
     static string switchVar;
     static vector<string> pendingCases;
 
     string trimmed = regex_replace(line, regex("^\\s+|\\s+$"), "");
     static bool insideIfElse = false;
+    static bool insideStruct = false;
+    static string currentStructName;
+        // ── 1) Skip C preprocessor directives ──────────────────────────────────
+        if (!trimmed.empty() && trimmed[0] == '#') {
+            return;
+        }
+    
+        // ── Combined “} else {” ───────────────────────────────────────────────
+        {
+            static const regex close_else(R"(\}\s*else\s*\{)");
+            if (regex_search(trimmed, matches, close_else)) {
+                // end the true‐branch and start the else‐branch
+                indentLevel--;
+                cout << getIndent() << ":: else ->" << endl;
+                indentLevel++;
+                return;
+            }
+        }
+
+            // ── Inline “if(cond) continue;” ──────────────────────────────────────
+    {
+        static const regex if_cont_pat(R"(\s*if\s*\(\s*(.*?)\s*\)\s*continue\s*;)");
+        if (regex_search(trimmed, matches, if_cont_pat)) {
+            cout << getIndent() << "if" << endl;
+            indentLevel++;
+            cout << getIndent() << ":: (" << matches[1] << ") -> skip;" << endl;
+            indentLevel--;
+            cout << getIndent() << "fi;" << endl;
+            return;
+        }
+    }
+    // ── Inline “if(cond) break;” ─────────────────────────────────────────
+    {
+        static const regex if_break_pat(R"(\s*if\s*\(\s*(.*?)\s*\)\s*break\s*;)");
+        if (regex_search(trimmed, matches, if_break_pat)) {
+            cout << getIndent() << "if" << endl;
+            indentLevel++;
+            cout << getIndent() << ":: (" << matches[1] << ") -> break;" << endl;
+            indentLevel--;
+            cout << getIndent() << "fi;" << endl;
+            return;
+        }
+    }
+
+
+
+        // ── 2) Handle atomic blocks ───────────────────────────────────────────
+    regex atomic_pat(R"(\s*atomic\s*\{)");
+    if (regex_search(trimmed, matches, atomic_pat)) {
+        cout << getIndent() << "atomic {" << endl;
+        indentLevel++;
+        return;
+    }
+
+ // ── 3) Handle typedef blocks ─────────────────────────────────────────
+ regex td_pat(R"(\s*typedef\s+(\w+)\s*\{)");
+ if (regex_search(trimmed, matches, td_pat)) {
+
+    // record that we’re inside a typedef‐style struct
+    currentStructName = matches[1];
+    insideStruct = true;
+    cout << getIndent()
+         << "typedef " << currentStructName << " {"
+         << endl;
+    indentLevel++;
+    return;
+ }
+
+    
+
 
     regex if_pattern(R"(\s*if\s*\(([^)]+)\)\s*\{)");
     regex else_pattern(R"(\s*else\s*\{)");
-
+    regex while_pattern(R"(\s*while\s*\(\s*(.*?)\s*\)\s*\{)");
+    regex for_pattern  (R"(\s*for\s*\(\s*(.*?);(.*?);(.*?)\s*\)\s*\{)");
+    
     // Struct handling state
-    static bool insideStruct = false;
-    static string currentStructName;
+    
     regex switch_pattern(R"(\s*switch\s*\(\s*(\w+)\s*\)\s*\{)");
     regex case_pattern(R"(\s*case\s+(\d+)\s*:\s*)");
     regex default_pattern(R"(\s*default\s*:\s*)");
-    
+
     if (regex_search(trimmed, matches, switch_pattern)) {
         switchVar = matches[1];
         cout << getIndent() << "if" << endl;
@@ -40,6 +117,28 @@ void parseExpression(const string& line) {
         pendingCases.clear();
         return;
     }
+    // while(cond) {
+if (regex_search(trimmed, matches, while_pattern)) {
+    loopStack.push_back("while");
+    cout << getIndent() << "do\n";
+    indentLevel++;
+    cout << getIndent() << ":: (" << matches[1] << ") ->\n";
+    indentLevel++;
+    return;
+}
+
+// for(init; cond; iter) {
+if (regex_search(trimmed, matches, for_pattern)) {
+    // emit initializer
+    cout << getIndent() << matches[1] << ";" << endl;
+    loopStack.push_back(matches[3]);
+    cout << getIndent() << "do\n";
+    indentLevel++;
+    cout << getIndent() << ":: (" << matches[2] << ") ->\n";
+    indentLevel++;
+    return;
+}
+
     if (insideSwitch && regex_search(trimmed, matches, case_pattern)) {
         pendingCases.push_back(matches[1]);
         return;
@@ -63,9 +162,23 @@ void parseExpression(const string& line) {
         return;
     }
 
+    // allow ++/-- on identifiers, array‐refs or struct‐fields
+    regex inc_pattern(R"(([\w\[\]\.]+)\s*\+\+\s*;)");
+    regex dec_pattern(R"(([\w\[\]\.]+)\s*--\s*;)");
 
-    regex inc_pattern(R"((\w+)\s*\+\+\s*;)");
-    regex dec_pattern(R"((\w+)\s*\-\-\s*;)");
+
+    // ── Handle continue/break ───────────────────────────────────────────
+regex continue_pattern(R"(\s*continue\s*;)");
+if (regex_search(trimmed, matches, continue_pattern)) {
+    cout << getIndent() << "skip;" << endl;
+    return;
+}
+regex break_pattern(R"(\s*break\s*;)");
+if (regex_search(trimmed, matches, break_pattern)) {
+    cout << getIndent() << "break;" << endl;
+    return;
+}
+
     // Match a++;
     if (regex_search(trimmed, matches, inc_pattern)) {
         if (insideSwitch && !pendingCases.empty()) {
@@ -104,8 +217,6 @@ void parseExpression(const string& line) {
         if (insideSwitch) indentLevel--;
         return;
     }
-
-    // Struct and array support
     regex struct_start(R"(\s*struct\s+(\w+)\s*\{)");
     regex struct_field(R"(\s*(int|byte|short|bool)\s+(\w+)\s*;)");
     regex struct_end(R"(\s*\};)");
@@ -120,6 +231,18 @@ void parseExpression(const string& line) {
         indentLevel++;
         return;
     }
+
+        // ── inline blocks ────────────────────────────────────────────────────
+        regex inline_pat(R"(\s*inline\s+(\w+)\s*\(\s*(.*?)\s*\)\s*\{)");
+        if (regex_search(trimmed, matches, inline_pat)) {
+            cout << getIndent()
+                 << "inline " << matches[1]
+                 << "(" << matches[2] << ") {"
+                 << endl;
+            indentLevel++;
+            return;
+        }
+    
         // Ternary conditional: a = (b > c) ? b : c;
     regex ternary_pattern(R"((\w+)\s*=\s*\(([^)]+)\)\s*\?\s*([^:]+)\s*:\s*(.+);)");
     if (regex_search(trimmed, matches, ternary_pattern)) {
@@ -182,15 +305,65 @@ void parseExpression(const string& line) {
         cout << getIndent() << type << " " << varname << "[" << size << "];" << endl;
         return;
     }
+
+        // ── 11) Arrays of typedef’d types ────────────────────────────────────
+        regex user_array(R"(\s*(\w+)\s+(\w+)\s*\[\s*(\d+)\s*\]\s*;)");
+        if (regex_search(trimmed, matches, user_array)) {
+            cout << getIndent()
+                 << matches[1] << " " << matches[2]
+                 << "[" << matches[3] << "];"
+                 << endl;
+            return;
+        }
     
 
-    // Main function: int main() {
+        // ── 8) Multi-dimensional arrays ───────────────────────────────────────
+        regex multi_array(R"(\s*(bit|bool|byte|short|int|unsigned)\s+(\w+)((\[\s*\w+\s*\]){2,})\s*;)");
+        if (regex_search(trimmed, matches, multi_array)) {
+            cout << getIndent()
+                 << matches[1] << " " << matches[2] << matches[3] << ";"
+                 << endl;
+            return;
+        }
+    
+        // ── Channel decls ───────────────────────────────────────────────────
+        regex chan_pat(R"(\s*chan\s+(\w+)\s*=\s*\[\s*(\d+)\s*\]\s*of\s*\{\s*(.+?)\s*\}\s*;)");
+        if (regex_search(trimmed, matches, chan_pat)) {
+            cout << getIndent()
+                 << "chan " << matches[1]
+                 << " = [" << matches[2] << "] of { " << matches[3] << " };"
+                 << endl;
+            return;
+        }
+    
+            // ── Basic Promela types ───────────────────────────────────────────
+        regex dtype(R"(\s*(bit|bool|byte|short|int|unsigned)\s+(\w+)\s*;)");
+        if (regex_search(trimmed, matches, dtype)) {
+            cout << getIndent()
+                << matches[1] << " " << matches[2] << ";"
+                << endl;
+            return;
+        }
+
+        // ── mtype enum ─────────────────────────────────────────────────────
+        regex mtype_pat(R"(\s*mtype\s*=\s*\{\s*(.*?)\s*\}\s*;)");
+        if (regex_search(trimmed, matches, mtype_pat)) {
+            cout << getIndent()
+                << "mtype = { " << matches[1] << " };"
+                << endl;
+            return;
+        }
+
+    
+
     regex main_pattern(R"(int\s+main\s*\(\s*\)\s*\{)");
     if (regex_search(trimmed, matches, main_pattern)) {
-        cout << getIndent() << "init {" << endl;
+        cout << getIndent() << "proctype main() {" << endl;
         indentLevel++;
         return;
     }
+    
+        
     // Match if statement
     if (regex_search(trimmed, matches, if_pattern)) {
         string condition = matches[1];
@@ -204,38 +377,118 @@ void parseExpression(const string& line) {
 
 // Match else block
 // Match else block
-    if (regex_search(trimmed, matches, else_pattern)) {
-        indentLevel--; // End previous if branch
-        cout << getIndent() << ":: else ->" << endl;
-        indentLevel++;
-        return;
-    }
+
 
 
 
     // Function call: foo();
-    regex call_pattern(R"((\w+)\s*\(\s*\)\s*;)");
-    if (regex_search(trimmed, matches, call_pattern)) {
-        if (insideSwitch && !pendingCases.empty()) {
-            cout << getIndent() << ":: (";
-            for (size_t i = 0; i < pendingCases.size(); ++i) {
-                if (i > 0) cout << " || ";
-                cout << switchVar << " == " << pendingCases[i];
-            }
-            cout << ") ->" << endl;
-            indentLevel++;
-            pendingCases.clear();
+
+
+    regex call_args_pattern(R"((\w+)\s*\(\s*(.*?)\s*\)\s*;)");
+if (regex_search(trimmed, matches, call_args_pattern)) {
+    cout << getIndent()
+         << "run " << matches[1]
+         << "("   << matches[2] << ");"
+         << endl;
+    return;
+}
+
+regex call_pattern(R"((\w+)\s*\(\s*\)\s*;)");
+if (regex_search(trimmed, matches, call_pattern)) {
+    if (insideSwitch && !pendingCases.empty()) {
+        cout << getIndent() << ":: (";
+        for (size_t i = 0; i < pendingCases.size(); ++i) {
+            if (i > 0) cout << " || ";
+            cout << switchVar << " == " << pendingCases[i];
+        }
+        cout << ") ->" << endl;
+        indentLevel++;
+        pendingCases.clear();
+    }
+
+    string called_func = matches[1];
+    cout << getIndent() << "run " << called_func << "();" << endl;
+    if (insideSwitch) indentLevel--;
+    return;
+}
+        // ── 9) Basic‐type declarations with initialization ─────────────────────
+        regex init_decl(R"(\s*(bit|bool|byte|short|int|unsigned)\s+(\w+)\s*=\s*(.+);)");
+        if (regex_search(trimmed, matches, init_decl)) {
+            cout << getIndent()
+                 << matches[1] << " " << matches[2]
+                 << " = " << matches[3] << ";"
+                 << endl;
+            return;
         }
 
-        string called_func = matches[1];
-        cout << getIndent() << "run " << called_func << "();" << endl;
-        if (insideSwitch) indentLevel--;
+            // ── 10) mtype variable declarations ───────────────────────────────────
+    regex mtype_var(R"(\s*mtype\s+(\w+)\s*=\s*(\w+);)");
+    if (regex_search(trimmed, matches, mtype_var)) {
+        cout << getIndent()
+             << "mtype " << matches[1]
+             << " = " << matches[2] << ";"
+             << endl;
         return;
     }
 
+    
 
-    // Assignment expression: a = b + c;
-    regex expr_pattern(R"((\w+)\s*=\s*(.+);)");
+    // ── Handle “i = 0, j = 0, k = 0;” ────────────────────────────────────
+if (trimmed.find(',') != string::npos && trimmed.find('=') != string::npos) {
+    // drop the trailing ';'
+    string body = trimmed.substr(0, trimmed.size() - 1);
+    istringstream iss(body);
+    string chunk;
+    while (getline(iss, chunk, ',')) {
+        chunk = regex_replace(chunk, regex("^\\s+|\\s+$"), "");
+        cout << getIndent() << chunk << ";" << endl;
+    }
+    return;
+}
+
+        regex printf_pattern(R"(printf\s*\((.*)\);)");
+    if (regex_search(trimmed, matches, printf_pattern)) {
+        cout << getIndent() << "printf(" << matches[1] << ");" << endl;
+        return;
+    }
+        // ── Handle return statements ─────────────────────────────────────────
+        regex return_pattern(R"(\s*return\b(?:\s*\d+)?\s*;)");
+        if (regex_search(trimmed, matches, return_pattern)) {
+            cout << getIndent() << "return;" << endl;
+            return;
+        }
+    
+
+    // ── malloc/free & pointers (stubs) ─────────────────────────────────
+regex malloc_pat(R"(\s*(\w+)\s*=\s*\(\w*\*\)\s*malloc\((.+)\);)");
+if (regex_search(trimmed, matches, malloc_pat)) {
+    cout << getIndent()
+         << "// " << matches[1]
+         << " = malloc(" << matches[2] << ");  (not supported)"
+         << endl;
+    return;
+}
+regex free_pat(R"(\s*free\s*\(\s*(\w+)\s*\);)");
+if (regex_search(trimmed, matches, free_pat)) {
+    cout << getIndent()
+         << "// free(" << matches[1] << ");  (no-op)"
+         << endl;
+    return;
+}
+regex ptr_decl(R"(\s*(int|byte|short|bool)\s*\*\s*(\w+)\s*;)");
+if (regex_search(trimmed, matches, ptr_decl)) {
+    cout << getIndent()
+         << "// pointer " << matches[1] << "* " << matches[2]
+         << " (manual handling)"
+         << endl;
+    return;
+}
+
+
+   // allow array-indices and == inside conditions get split separately
+regex expr_pattern(R"(([\w\[\]\.]+)\s*=\s*(.+);)");
+
+
     if (regex_search(trimmed, matches, expr_pattern)) {
         if (insideSwitch && !pendingCases.empty()) {
             cout << getIndent() << ":: (";
@@ -255,90 +508,82 @@ void parseExpression(const string& line) {
         return;
     }
 
-    // Closing brace: }
-    if (trimmed == "}") {
-        if (insideSwitch) {
-        if (indentLevel > 0) indentLevel--;
+// ── Closing brace: }
+if (trimmed == "}") {
+    // 1) Finish an if…else first
+    if (insideIfElse) {
+        indentLevel--;
+        cout << getIndent() << "fi;" << endl;
+        insideIfElse = false;
+        return;
+    }
+
+    // 2) Close a do…od loop if we’re in one
+    if (!loopStack.empty()) {
+       // first emit the increment step we saved:
+       string iterExpr = loopStack.back();
+       loopStack.pop_back();
+       indentLevel--;                  // outdent from loop body
+       cout << getIndent() << iterExpr << ";" << endl;
+
+       // then finish the loop
+       cout << getIndent() << ":: else -> break;" << endl;
+       indentLevel--;                  // outdent from the 'do'
+       cout << getIndent() << "od;" << endl;
+       return;
+    }
+
+    // 3) Close a switch…fi if we’re in one
+    if (insideSwitch) {
+        indentLevel--;             // outdent from switch-if
         cout << getIndent() << "fi" << endl;
         insideSwitch = false;
         pendingCases.clear();
         return;
     }
 
-        if (insideIfElse) {
-            // We're closing a branch (if or else), not a normal block
-            indentLevel--;  // close :: branch
-            // If this is the final closing brace of the full if-else
-            static int ifBranchCount = 0;
-            ifBranchCount++;
-            if (ifBranchCount == 2) {
-                if (indentLevel > 0) indentLevel--;
-                cout << getIndent() << "fi" << endl;
-                insideIfElse = false;
-                ifBranchCount = 0;
-            
-                if (indentLevel > 0) indentLevel--;
-                cout << getIndent() << "}" << endl;
-            }
-            
-            return;
-        } else {
-            // Normal function or init block
-            indentLevel--;
-            cout << getIndent() << "}" << endl;
-            return;
-        }
-    }
-    
-    
-    
+    // 4) Normal block close
+    indentLevel--;
+    cout << getIndent() << "}" << endl;
+    return;
+}
+
 
     cerr << "Unrecognized or unsupported: " << line << endl;
 }
 
 int main() {
+    // Open the input C source
     ifstream infile("input.c");
     if (!infile.is_open()) {
         cerr << "Error: Could not open input.c" << endl;
         return 1;
     }
 
+    // Create the Promela output file
     ofstream outfile("output.spin");
     if (!outfile.is_open()) {
         cerr << "Error: Could not create output.spin" << endl;
         return 1;
     }
 
+    // ── Redirect all cout into output.spin ─────────────────────────────────────
+    auto old_buf = cout.rdbuf(outfile.rdbuf());
+
     string line;
     while (getline(infile, line)) {
         if (line.empty()) continue;
-
-        // Redirect cout to output.spin
-        streambuf* old_buf = cout.rdbuf();
-        cout.rdbuf(outfile.rdbuf());
-
         parseExpression(line);
-
-        // Restore cout to console
-        cout.rdbuf(old_buf);
     }
+
+    // ── Restore cout back to the console ───────────────────────────────────────
+    cout.rdbuf(old_buf);
 
     infile.close();
     outfile.close();
 
+    // Optional: print completion message to console
     cout << "✅ Translation complete. Output saved to: output.spin" << endl;
-    ifstream result("output.spin");
-    if (!result.is_open()) {
-        cerr << "Error: Could not read back output.spin" << endl;
-        return 1;
-    }
-
-    cout << "\n🔍 Final Output in output.spin:\n\n";
-    string lineOut;
-    while (getline(result, lineOut)) {
-        cout << lineOut << endl;
-    }
-    result.close();
 
     return 0;
 }

@@ -1,10 +1,5 @@
-switch(flag) {
-    case 0:
-        tries++;
-        break;
-    case 1:
-        retries--;
-        break;
-    default:
-        done = 1;
-}
+typedef MyS { int a; byte b; };
+
+MyS arr2[3];
+arr2[1].a++;
+--arr2[2].b;
