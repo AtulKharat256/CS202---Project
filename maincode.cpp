@@ -223,14 +223,6 @@ if (regex_search(trimmed, matches, break_pattern)) {
     regex struct_array_decl(R"(\s*struct\s+(\w+)\s+(\w+)\[(\d+)\];)");
     regex array_decl(R"((int|byte|short|bool)\s+(\w+)\[(\d+)\];)");
 
-    // Function definition: void foo() {
-    regex func_pattern(R"((?:void|int|byte|bool|short)\s+(\w+)\s*\(\s*\)\s*\{)");
-    if (regex_search(trimmed, matches, func_pattern)) {
-        string func_name = matches[1];
-        cout << getIndent() << "proctype " << func_name << "() {" << endl;
-        indentLevel++;
-        return;
-    }
 
         // ── inline blocks ────────────────────────────────────────────────────
         regex inline_pat(R"(\s*inline\s+(\w+)\s*\(\s*(.*?)\s*\)\s*\{)");
@@ -374,6 +366,13 @@ if (regex_search(trimmed, matches, break_pattern)) {
         insideIfElse = true;
         return;
     }
+    if (trimmed == "else {") {
+    cout << getIndent() << ":: else ->" << endl;
+    indentLevel++;
+    insideIfElse = true;
+    return;
+}
+
 
 // Match else block
 // Match else block
@@ -384,14 +383,7 @@ if (regex_search(trimmed, matches, break_pattern)) {
     // Function call: foo();
 
 
-    regex call_args_pattern(R"((\w+)\s*\(\s*(.*?)\s*\)\s*;)");
-if (regex_search(trimmed, matches, call_args_pattern)) {
-    cout << getIndent()
-         << "run " << matches[1]
-         << "("   << matches[2] << ");"
-         << endl;
-    return;
-}
+    
 
 regex call_pattern(R"((\w+)\s*\(\s*\)\s*;)");
 if (regex_search(trimmed, matches, call_pattern)) {
@@ -483,13 +475,132 @@ if (regex_search(trimmed, matches, ptr_decl)) {
          << endl;
     return;
 }
+static string currentFunctionName;
+    static bool insideFunction = false;
+    static bool sawIfReturn = false;
+    // Match: int gcd(int x, int y) {
+regex func_args_pattern(R"((?:int|void|byte|short|bool)\s+(\w+)\s*\(([^)]*)\)\s*\{)");
+if (regex_search(trimmed, matches, func_args_pattern)) {
+    string func_name = matches[1];
+    string args = matches[2];
+    currentFunctionName = func_name;
+    insideFunction = true;
 
+    vector<string> argsList;
+    istringstream argstream(args);
+    string arg;
+    while (getline(argstream, arg, ',')) {
+        arg = regex_replace(arg, regex("^\\s+|\\s+$"), "");
+        if (!arg.empty()) argsList.push_back(arg);
+    }
+
+    cout << getIndent() << "proctype " << func_name << "(chan ret_" << func_name;
+    for (const string& argstr : argsList) {
+        smatch argMatch;
+        if (regex_search(argstr, argMatch, regex(R"((int|byte|bool|short)\s+(\w+))"))) {
+            cout << "; " << argMatch[1] << " " << argMatch[2];
+        }
+    }
+    cout << ") {" << endl;
+    indentLevel++;
+
+    cout << getIndent() << "chan ret_tmp = [0] of { int };" << endl;
+    cout << getIndent() << "int tmp;" << endl;
+    return;
+}
+// ── Phase 1: match “if(cond) return X;” ───────────────────────────────
+static const regex if_return_pat(
+    R"(^\s*if\s*\(\s*(.+?)\s*\)\s*return\s+([^;{}]+?)\s*;?\s*\}?\s*$)"
+);
+bool endsWithBrace = trimmed.find("}") != string::npos;
+
+
+
+if (regex_search(trimmed, matches, if_return_pat)) {
+    sawIfReturn = true;
+    string cond = matches[1], expr = matches[2];
+
+    cout << getIndent() << "if\n";
+    indentLevel++;
+    cout << getIndent() << ":: (" << cond << ") ->\n";
+    indentLevel++;
+    cout << getIndent()
+         << "ret_" << currentFunctionName
+         << " ! " << expr << ";\n";
+    cout << getIndent() << "goto end;\n";
+    if (endsWithBrace) {
+    indentLevel--;
+    cout << getIndent() << "fi;" << endl;
+    indentLevel--;
+    cout << getIndent() << "end:" << endl;
+    cout << getIndent() << "printf(\"End of " << currentFunctionName << "\\n\");" << endl;
+    cout << getIndent() << "}" << endl;
+    insideFunction = false;
+    currentFunctionName.clear();
+}
+
+    indentLevel--;
+    return;  // wait for the else
+}
+
+// ── Phase 2: match “else return Func(args);” ───────────────────────────
+static const regex else_return_pat(
+    R"(^\s*else\s*return\s+(\w+)\s*\((.*)\)\s*;)"
+);
+
+if (sawIfReturn && regex_search(trimmed, matches, else_return_pat)) {
+    sawIfReturn = false;
+    string callee = matches[1], args = matches[2];
+
+    cout << getIndent() << ":: else ->\n";
+    indentLevel++;
+    cout << getIndent()
+         << "run " << callee
+         << "(ret_tmp, " << args << ");\n";
+    cout << getIndent() << "ret_tmp ? tmp;\n";
+    cout << getIndent()
+         << "ret_" << currentFunctionName
+         << " ! tmp;\n";
+    cout << getIndent() << "goto end;\n";
+    indentLevel--;
+    cout << getIndent() << "fi;\n";
+    return;
+}
+regex call_args_pattern(R"((\w+)\s*\(\s*(.*?)\s*\)\s*;)");
+if (regex_search(trimmed, matches, call_args_pattern)) {
+    string callee = matches[1];
+    string args = matches[2];
+    
+    // Check if the call is in a return context (like assignment or conditional)
+    if (insideFunction && sawIfReturn) {
+        // This is handled in the "else return" logic, skip here
+        return;
+    }
+
+    cout << getIndent()
+         << "run " << callee
+         << "(ret_tmp, " << args << ");" << endl;
+    cout << getIndent() << "ret_tmp ? tmp;" << endl;
+    return;
+}
+
+// ── Inline return like “return n;” ───────────────────────────────────────────
+regex simple_return_expr(R"(\s*return\s+([^\s;]+)\s*;)");
+if (regex_search(trimmed, matches, simple_return_expr)) {
+    string expr = matches[1];
+    cout << getIndent()
+         << "ret_" << currentFunctionName
+         << " ! " << expr << ";\n";
+    cout << getIndent() << "goto end;\n";
+    return;
+}
 
    // allow array-indices and == inside conditions get split separately
 regex expr_pattern(R"(([\w\[\]\.]+)\s*=\s*(.+);)");
 
 
     if (regex_search(trimmed, matches, expr_pattern)) {
+        
         if (insideSwitch && !pendingCases.empty()) {
             cout << getIndent() << ":: (";
             for (size_t i = 0; i < pendingCases.size(); ++i) {
@@ -507,6 +618,9 @@ regex expr_pattern(R"(([\w\[\]\.]+)\s*=\s*(.+);)");
         if (insideSwitch) indentLevel--;
         return;
     }
+    
+
+
 
 // ── Closing brace: }
 if (trimmed == "}") {
@@ -539,6 +653,15 @@ if (trimmed == "}") {
         cout << getIndent() << "fi" << endl;
         insideSwitch = false;
         pendingCases.clear();
+        return;
+    }
+    if (insideFunction) {
+        cout << getIndent() << "end:" << endl;
+        cout << getIndent() << "printf(\"End of " << currentFunctionName << "\\n\");" << endl;
+        indentLevel--;
+        cout << getIndent() << "}" << endl;
+        currentFunctionName.clear();
+        insideFunction = false;
         return;
     }
 
