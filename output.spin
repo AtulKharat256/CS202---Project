@@ -1,3 +1,7 @@
-// pointer int* p (manual handling)
-// p = malloc(sizeof(int));  (not supported)
-// free(p);  (no-op)
+proctype test(chan ret_test) {
+    run malloc(ret_tmp, sizeof(struct node));
+    ret_tmp ? tmp;
+    // free(p);  (no-op)
+    end:
+    printf("End of test\n");
+}
