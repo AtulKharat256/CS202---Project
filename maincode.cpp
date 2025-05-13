@@ -40,7 +40,9 @@ void parseExpression(const string& line) {
     
 // ── One-line “else return X;” after an if-return ──────────────────────
 {
-    static const regex else_return_val(R"(^else\s+return\s+([^;]+);)");
+    // only match plain constants or variables (no ‘(’)
+static const regex else_return_val(R"(^else\s+return\s+([^;(]+);)");
+
     if (insideIfElse && regex_search(trimmed, matches, else_return_val)) {
         // 1) emit the else-guard as a channel send + goto
         cout << getIndent()
@@ -745,6 +747,29 @@ if (regex_search(trimmed, matches, if_return_pat)) {
 static const regex else_return_pat(
     R"(^\s*else\s*return\s+(\w+)\s*\((.*)\)\s*;)"
 );
+
+// ── Phase 2b: “else return Func(args);” ───────────────────────────────
+static const regex else_return_call(R"(^\s*else\s*return\s+(\w+)\s*\((.*?)\)\s*;)");
+if (insideFunction && sawIfReturn
+    && regex_search(trimmed, matches, else_return_call)) {
+    sawIfReturn = false;               // consume the pending if-return
+    // start the else‐guard
+    cout << getIndent() << ":: else ->" << endl;
+    indentLevel++;
+    // run the recursive call
+    cout << getIndent()
+         << "run " << matches[1]
+         << "(ret_tmp, " << matches[2] << ");" << endl;
+    cout << getIndent() << "ret_tmp ? tmp;" << endl;
+    cout << getIndent()
+         << "ret_" << currentFunctionName
+         << " ! tmp;" << endl;
+    cout << getIndent() << "goto end;" << endl;
+    // close the if…fi
+    indentLevel--;
+    cout << getIndent() << "fi;" << endl;
+    return;
+}
 
     // ── Return‐call inside the else branch ────────────────────────────────
     static const regex return_func_pat(
