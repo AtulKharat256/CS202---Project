@@ -1,10 +1,4 @@
-struct node {
-    struct node *next;
+struct node{
     int value;
 };
-
-struct node* tail;
-void test( struct node *temp){
-    tail->next = temp;
-    tail = temp;
-}
+struct node n[10];
