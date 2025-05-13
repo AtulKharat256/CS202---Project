@@ -1,10 +1,5 @@
-struct node {
-    struct node *next;
-    int value;
-};
-
-struct node* tail;
-void test( struct node *temp){
-    tail->next = temp;
-    tail = temp;
+int i = 1;
+while(1){
+    if(i>n) break;
+    i++;
 }
