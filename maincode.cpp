@@ -161,40 +161,70 @@ void parseExpression(const string& line) {
         pendingCases.clear();
         return;
     }
-    // while(cond) {
-if (regex_search(trimmed, matches, while_pattern)) {
-    loopStack.push_back("");
-    cout << getIndent() << "do\n";
-    indentLevel++;
-    //cout << getIndent() << ":: (" << matches[1] << ") ->\n";
-    //indentLevel++;
-    return;
-}
 
-{
-    static const regex inf_if_break(
-        R"(\s*if\s*\(\s*(.*?)\)\s*break\s*;)"
-    );
-    if (!loopStack.empty() && loopStack.back().empty()
-        && regex_search(trimmed, matches, inf_if_break)) {
-        cout << getIndent()
-             << ":: (" << matches[1] << ") -> break" << endl;
-        return;
-    }
-}
+    if (regex_search(trimmed, matches, while_pattern)) {
+        string cond = matches[1];
+        bool isInfinite = (cond == "1" || cond == "true");
 
-// ── inside infinite loop: “else stmt;” becomes the else‐guard ──────────
-{
-    static const regex inf_else(
-        R"(\s*else\s*(.*?)\s*;)"
-    );
-    if (!loopStack.empty() && loopStack.back().empty()
-        && regex_search(trimmed, matches, inf_else)) {
-        cout << getIndent()
-             << ":: else   -> " << matches[1] << endl;
+        // push either empty (infinite) or the real condition
+        loopStack.push_back(isInfinite ? string() : cond);
+ 
+        // open the do…od
+        cout << getIndent() << "do" << endl;
+        indentLevel++;
+
+        // for finite loops, emit the entry‐guard
+        if (!isInfinite) {
+            cout << getIndent()
+                 << ":: (" << cond << ") ->" << endl;
+            indentLevel++;
+        }
         return;
+     }
+
+     {
+         static const regex inf_if_break(
+             R"(\s*if\s*\(\s*(.*?)\)\s*break\s*;)"
+         );
+//-        if (!loopStack.empty() && loopStack.back().empty()
+//-            && regex_search(trimmed, matches, inf_if_break)) {
+//-            cout << getIndent()
+//-                 << ":: (" << matches[1] << ") -> break" << endl;
+//-            return;
+//-        }
+        if (!loopStack.empty() && loopStack.back().empty()
+            && regex_search(trimmed, matches, inf_if_break))
+       {
+            cout << getIndent()
+                 << ":: (" << matches[1] << ") -> break" << endl;
+            return;
+        }
+     }
+ 
+    // ── inside infinite loop: “else stmt;” becomes the else‐guard ──────────
+//-    {
+//-        static const regex inf_else(
+//-            R"(\s*else\s*(.*?)\s*;)"
+//-        );
+//-        if (!loopStack.empty() && loopStack.back().empty()
+//-            && regex_search(trimmed, matches, inf_else)) {
+//-            cout << getIndent()
+//-                 << ":: else   -> " << matches[1] << endl;
+//-            return;
+//-        }
+//-    }
+    if (!loopStack.empty() && loopStack.back().empty()) {
+        // only emit a default guard for a “real” statement line ending in “;”
+        static const regex stmt_pat(R"(^(.+?);$)");
+        if (regex_search(trimmed, matches, stmt_pat)) {
+            // remove any trailing “;” in the captured body
+            string body = matches[1];
+            cout << getIndent()
+                 << ":: else -> " << body << ";" << endl;
+            return;
+        }
     }
-}
+
 
 // for(init; cond; iter) {
 if (regex_search(trimmed, matches, for_pattern)) {
@@ -860,23 +890,25 @@ if (trimmed == "}") {
     }
 
     // 2) Close a do…od loop if we’re in one
-// ── 2) Close a do…od loop if we’re in one
-// ── 2) Close a do…od loop if we’re in one
-if (!loopStack.empty()) {
-    string iterExpr = loopStack.back();
-    loopStack.pop_back();
-    indentLevel--;  // outdent from loop body
+ if (!loopStack.empty()) {
+//-    string cond = loopStack.back();
+   string iterExpr = loopStack.back();
+     loopStack.pop_back();
 
-    // only emit an “increment” + default‐break for non‐infinite loops
+     indentLevel--;  // outdent from the loop body
+    // if this was a for-loop, emit its iterator
     if (!iterExpr.empty()) {
         cout << getIndent() << iterExpr << ";" << endl;
-        cout << getIndent() << ":: else -> break;" << endl;
-    }
+             cout << getIndent() << ":: else -> break;" << endl;
 
-    indentLevel--;  // outdent from the 'do'
-    cout << getIndent() << "od" << endl;
-    return;
-}
+    }
+     // always close with the break-guard
+     indentLevel--;  // outdent from the 'do'
+     cout << getIndent() << "od" << endl;
+     return;
+ }
+
+
 
 
     // 3) Close a switch…fi if we’re in one
