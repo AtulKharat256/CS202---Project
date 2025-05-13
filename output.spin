@@ -1,7 +1,13 @@
+typedef node {
+    node* next;
+    int value;
+}
+node node_mem[9];
+int node_valid[9];
+node* tail;
 proctype test(chan ret_test) {
-    run malloc(ret_tmp, sizeof(struct node));
-    ret_tmp ? tmp;
-    // free(p);  (no-op)
+    next = temp;
+    tail = temp;
     end:
     printf("End of test\n");
 }

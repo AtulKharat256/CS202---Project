@@ -29,22 +29,60 @@ void parseExpression(const string& line) {
     static bool insideIfElse = false;
     static bool insideStruct = false;
     static string currentStructName;
+        static bool insideFunction = false;
+    static bool sawIfReturn   = false;
+    static string currentFunctionName;
+
         // ── 1) Skip C preprocessor directives ──────────────────────────────────
         if (!trimmed.empty() && trimmed[0] == '#') {
             return;
         }
     
-        // ── Combined “} else {” ───────────────────────────────────────────────
-        {
-            static const regex close_else(R"(\}\s*else\s*\{)");
-            if (regex_search(trimmed, matches, close_else)) {
-                // end the true‐branch and start the else‐branch
-                indentLevel--;
-                cout << getIndent() << ":: else ->" << endl;
-                indentLevel++;
-                return;
-            }
+// ── One-line “else return X;” after an if-return ──────────────────────
+{
+    static const regex else_return_val(R"(^else\s+return\s+([^;]+);)");
+    if (insideIfElse && regex_search(trimmed, matches, else_return_val)) {
+        // 1) emit the else-guard as a channel send + goto
+        cout << getIndent()
+             << ":: else   -> ret_" << currentFunctionName
+             << " ! " << matches[1] << ";" << endl;
+        cout << getIndent() << "goto end;" << endl;
+        // 2) close the if…fi
+        indentLevel--;
+        cout << getIndent() << "fi;" << endl;
+        insideIfElse = false;
+        return;
+    }
+}
+
+// ── One-line “else stmt;” after a  single-branch if ──────────────────
+{
+    static const regex else_stmt(R"(^else\s+(.+);)");
+    if (insideIfElse && regex_search(trimmed, matches, else_stmt)) {
+        cout << getIndent()
+             << ":: else   -> " << matches[1] << ";" << endl;
+        indentLevel--;
+        cout << getIndent() << "fi;" << endl;
+        insideIfElse = false;
+        return;
+    }
+}
+
+
+
+
+    // ── Combined “} else {” ───────────────────────────────────────────────
+    {
+        static const regex close_else(R"(\}\s*else\s*\{)");
+        if (regex_search(trimmed, matches, close_else)) {
+            // end the true‐branch and start the else‐branch
+            indentLevel--;
+            cout << getIndent() << ":: else ->" << endl;
+            indentLevel++;
+            return;
         }
+    }
+
 
             // ── Inline “if(cond) continue;” ──────────────────────────────────────
     {
@@ -58,18 +96,24 @@ void parseExpression(const string& line) {
             return;
         }
     }
-    // ── Inline “if(cond) break;” ─────────────────────────────────────────
-    {
-        static const regex if_break_pat(R"(\s*if\s*\(\s*(.*?)\s*\)\s*break\s*;)");
-        if (regex_search(trimmed, matches, if_break_pat)) {
-            cout << getIndent() << "if" << endl;
-            indentLevel++;
-            cout << getIndent() << ":: (" << matches[1] << ") -> break;" << endl;
-            indentLevel--;
-            cout << getIndent() << "fi;" << endl;
-            return;
-        }
+// ── Inline “if(cond) break; else stmt;” ─────────────────────────────────
+{
+    static const regex if_break_else_pat(
+        R"(\s*if\s*\(\s*(.*?)\s*\)\s*break\s*;\s*else\s*(.+?);)"
+    );
+    if (regex_search(trimmed, matches, if_break_else_pat)) {
+        cout << getIndent() << "if" << endl;
+        indentLevel++;
+        cout << getIndent()
+             << ":: (" << matches[1] << ") -> break;" << endl;
+        cout << getIndent()
+             << ":: else   -> " << matches[2] << ";" << endl;
+        indentLevel--;
+        cout << getIndent() << "fi;" << endl;
+        return;
     }
+}
+
 
 
 
@@ -119,12 +163,37 @@ void parseExpression(const string& line) {
     }
     // while(cond) {
 if (regex_search(trimmed, matches, while_pattern)) {
-    loopStack.push_back("while");
+    loopStack.push_back("");
     cout << getIndent() << "do\n";
     indentLevel++;
-    cout << getIndent() << ":: (" << matches[1] << ") ->\n";
-    indentLevel++;
+    //cout << getIndent() << ":: (" << matches[1] << ") ->\n";
+    //indentLevel++;
     return;
+}
+
+{
+    static const regex inf_if_break(
+        R"(\s*if\s*\(\s*(.*?)\)\s*break\s*;)"
+    );
+    if (!loopStack.empty() && loopStack.back().empty()
+        && regex_search(trimmed, matches, inf_if_break)) {
+        cout << getIndent()
+             << ":: (" << matches[1] << ") -> break" << endl;
+        return;
+    }
+}
+
+// ── inside infinite loop: “else stmt;” becomes the else‐guard ──────────
+{
+    static const regex inf_else(
+        R"(\s*else\s*(.*?)\s*;)"
+    );
+    if (!loopStack.empty() && loopStack.back().empty()
+        && regex_search(trimmed, matches, inf_else)) {
+        cout << getIndent()
+             << ":: else   -> " << matches[1] << endl;
+        return;
+    }
 }
 
 // for(init; cond; iter) {
@@ -223,6 +292,39 @@ if (regex_search(trimmed, matches, break_pattern)) {
     regex struct_array_decl(R"(\s*struct\s+(\w+)\s+(\w+)\[(\d+)\];)");
     regex array_decl(R"((int|byte|short|bool)\s+(\w+)\[(\d+)\];)");
 
+        // ── 12) struct‐pointer declarations ────────────────────────────────
+    static const regex struct_ptr_decl(
+        R"(\s*struct\s+(\w+)\s*\*\s*(\w+)\s*;)"
+    );
+    if (regex_search(trimmed, matches, struct_ptr_decl)) {
+        // now we actually declare the pointer instead of stubbing it
+        cout << getIndent()
+             << matches[1] << "* " << matches[2] << ";"
+             << endl;
+        return;
+    }
+
+    // ── 13) pointer assignment & dereference ───────────────────────────
+    static const regex ptr_assign(
+        R"(\s*(\w+)\s*=\s*&?(\w+)(?:->(\w+)|\.(\w+))\s*;)"
+    );
+    if (regex_search(trimmed, matches, ptr_assign)) {
+        // matches[1]=lhs, matches[2]=base, matches[3]=->field, matches[4]=.field
+        string lhs   = matches[1];
+        string base  = matches[2];
+        string field = matches[3].matched ? matches[3].str()
+                                          : matches[4].str();
+        bool   isArrow = matches[3].matched;
+        cout << getIndent()
+             << lhs << " = "
+             << (isArrow ? base + "->" + field
+                         : base + "." + field)
+             << ";"
+             << endl;
+        return;
+    }
+
+
 
         // ── inline blocks ────────────────────────────────────────────────────
         regex inline_pat(R"(\s*inline\s+(\w+)\s*\(\s*(.*?)\s*\)\s*\{)");
@@ -273,14 +375,43 @@ if (regex_search(trimmed, matches, break_pattern)) {
         cout << getIndent() << matches[1] << " " << matches[2] << ";" << endl;
         return;
     }
-    
+
+        // ── support struct‐pointer fields as integer indices ───────────────────
+    static const regex ptr_field(
+        R"(\s*struct\s+(\w+)\s*\*\s*(\w+)\s*;)"
+    );
+    if (insideStruct && regex_search(trimmed, matches, ptr_field)) {
+        // we represent every pointer as an index (int) into the object pool
+        cout << getIndent()
+             << "int " << matches[2] << ";" << endl;
+        return;
+    }
+
+    // ── fall back to ordinary fields ───────────────────────────────────────
+    if (insideStruct && regex_search(trimmed, matches, struct_field)) {
+        cout << getIndent()
+             << matches[1] << " " << matches[2] << ";" << endl;
+        return;
+    }
+
+    // ── close typedef and emit memory‐model arrays ─────────────────────────
     if (insideStruct && regex_search(trimmed, matches, struct_end)) {
         indentLevel--;
         cout << getIndent() << "}" << endl;
         insideStruct = false;
+
+        // stash the struct name so we can emit the pools
+        string S = currentStructName;
         currentStructName.clear();
+
+        // adjust the magic “9” to however many slots you need
+        cout << getIndent()
+             << S << " " << S << "_mem[9];" << endl;
+        cout << getIndent()
+             << "int " << S << "_valid[9];" << endl;
         return;
     }
+
     
     if (regex_search(trimmed, matches, struct_array_decl)) {
         string typename_ = matches[1];
@@ -399,6 +530,35 @@ if (regex_search(trimmed, matches, call_pattern)) {
     if (insideSwitch) indentLevel--;
     return;
 }
+
+    // ── assign from &var or &arr[idx]
+    static const regex ref_assign(
+      R"(\s*(\w+)\s*=\s*&(\w+)(?:\[(\w+)\])?\s*;)"
+    );
+    if (regex_search(trimmed, matches, ref_assign)) {
+        string lhs   = matches[1];
+        string base  = matches[2];
+        string idx   = matches[3].str();
+        cout << getIndent()
+             << lhs << " = "
+             << base << "_mem[" << (idx.empty() ? "0" : idx) << "];"
+             << endl;
+        return;
+    }
+
+    // ── assign from struct‐field or pointer‐field
+    static const regex struct_assign(
+      R"(\s*(\w+)\s*=\s*(\w+)(?:->|\.)+(\w+)\s*;)"
+    );
+    if (regex_search(trimmed, matches, struct_assign)) {
+        cout << getIndent()
+             << matches[1]
+             << " = "
+             << matches[2] << "_" << matches[3]
+             << ";" << endl;
+        return;
+    }
+
         // ── 9) Basic‐type declarations with initialization ─────────────────────
         regex init_decl(R"(\s*(bit|bool|byte|short|int|unsigned)\s+(\w+)\s*=\s*(.+);)");
         if (regex_search(trimmed, matches, init_decl)) {
@@ -471,9 +631,7 @@ if (regex_search(trimmed, matches, ptr_decl)) {
          << endl;
     return;
 }
-static string currentFunctionName;
-    static bool insideFunction = false;
-    static bool sawIfReturn = false;
+
     // Match: int gcd(int x, int y) {
 
 
@@ -545,29 +703,50 @@ if (regex_search(trimmed, matches, if_return_pat)) {
     return;  // wait for the else
 }
 
+
+    // ── Bare “else” after an if–return ────────────────────────────────────
+    if (insideFunction && sawIfReturn && trimmed == "else") {
+        cout << getIndent() << ":: else ->" << endl;
+        indentLevel++;
+        return;
+   }
+
 // ── Phase 2: match “else return Func(args);” ───────────────────────────
 static const regex else_return_pat(
     R"(^\s*else\s*return\s+(\w+)\s*\((.*)\)\s*;)"
 );
 
-if (sawIfReturn && regex_search(trimmed, matches, else_return_pat)) {
-    sawIfReturn = false;
-    string callee = matches[1], args = matches[2];
+    // ── Return‐call inside the else branch ────────────────────────────────
+    static const regex return_func_pat(
+        R"(^\s*return\s+(\w+)\s*\((.*?)\)\s*;)"
+    );
+    if (insideFunction && sawIfReturn
+       && regex_search(trimmed, matches, return_func_pat)) {
+        sawIfReturn = false;
+        string callee = matches[1], args = matches[2];
 
-    cout << getIndent() << ":: else ->\n";
-    indentLevel++;
-    cout << getIndent()
-         << "run " << callee
-         << "(ret_tmp, " << args << ");\n";
-    cout << getIndent() << "ret_tmp ? tmp;\n";
-    cout << getIndent()
-         << "ret_" << currentFunctionName
-         << " ! tmp;\n";
-    cout << getIndent() << "goto end;\n";
-    indentLevel--;
-    cout << getIndent() << "fi;\n";
-    return;
-}
+        // emit the body of our “else” branch
+        cout << getIndent()
+             << "run " << callee
+             << "(ret_tmp, " << args << ");" << endl;
+        cout << getIndent() << "ret_tmp ? tmp;" << endl;
+        cout << getIndent()
+             << "ret_" << currentFunctionName
+             << " ! tmp;" << endl;
+        cout << getIndent() << "goto end;" << endl;
+
+       // close out the if…fi and the proctype
+        indentLevel--;                 // outdent from else‐branch
+        cout << getIndent() << "fi;" << endl;
+        cout << getIndent() << "end:" << endl;
+        cout << getIndent()
+             << "printf(\"End of " << currentFunctionName << "\\n\");" << endl;
+        cout << getIndent() << "}" << endl;
+        insideFunction = false;
+        currentFunctionName.clear();
+        return;
+    }
+
 regex call_args_pattern(R"((\w+)\s*\(\s*(.*?)\s*\)\s*;)");
 if (regex_search(trimmed, matches, call_args_pattern)) {
     string callee = matches[1];
@@ -590,12 +769,23 @@ if (regex_search(trimmed, matches, call_args_pattern)) {
 regex simple_return_expr(R"(\s*return\s+([^\s;]+)\s*;)");
 if (regex_search(trimmed, matches, simple_return_expr)) {
     string expr = matches[1];
-    cout << getIndent()
-         << "ret_" << currentFunctionName
-         << " ! " << expr << ";\n";
-    cout << getIndent() << "goto end;\n";
+
+    // If we just saw an if(cond) return …;, this is the else‐branch:
+    if (insideFunction && sawIfReturn) {
+        cout << getIndent() << ":: else   -> ";
+        sawIfReturn = false;           // consume the pending if-return
+        insideIfElse = false;          // close out insideIfElse
+    }
+
+    cout << "ret_" << currentFunctionName
+         << " ! " << expr << ";" << endl;
+    cout << getIndent() << "goto end;" << endl;
+
+    // Now close the if…fi and emit end‐label
+    cout << getIndent() << "fi;" << endl;
     return;
 }
+
 static const regex return_func_call(R"(return\s+(\w+)\((.*?)\);)");
 if (regex_search(trimmed, matches, return_func_call)) {
     string callee = matches[1];
@@ -664,25 +854,30 @@ if (trimmed == "}") {
     // 1) Finish an if…else first
     if (insideIfElse) {
         indentLevel--;
-        cout << getIndent() << "fi;" << endl;
-        insideIfElse = false;
+        //cout << getIndent() << "fi;" << endl;
+        //insideIfElse = false;
         return;
     }
 
     // 2) Close a do…od loop if we’re in one
-    if (!loopStack.empty()) {
-       // first emit the increment step we saved:
-       string iterExpr = loopStack.back();
-       loopStack.pop_back();
-       indentLevel--;                  // outdent from loop body
-       cout << getIndent() << iterExpr << ";" << endl;
+// ── 2) Close a do…od loop if we’re in one
+// ── 2) Close a do…od loop if we’re in one
+if (!loopStack.empty()) {
+    string iterExpr = loopStack.back();
+    loopStack.pop_back();
+    indentLevel--;  // outdent from loop body
 
-       // then finish the loop
-       cout << getIndent() << ":: else -> break;" << endl;
-       indentLevel--;                  // outdent from the 'do'
-       cout << getIndent() << "od;" << endl;
-       return;
+    // only emit an “increment” + default‐break for non‐infinite loops
+    if (!iterExpr.empty()) {
+        cout << getIndent() << iterExpr << ";" << endl;
+        cout << getIndent() << ":: else -> break;" << endl;
     }
+
+    indentLevel--;  // outdent from the 'do'
+    cout << getIndent() << "od" << endl;
+    return;
+}
+
 
     // 3) Close a switch…fi if we’re in one
     if (insideSwitch) {
@@ -693,14 +888,27 @@ if (trimmed == "}") {
         return;
     }
     if (insideFunction) {
-    cout << getIndent() << "end:" << endl;
-    cout << getIndent() << "printf(\"End of " << currentFunctionName << "\\n\");" << endl;
-    indentLevel--;
-    cout << getIndent() << "}" << endl;
-    insideFunction = false;
-    currentFunctionName.clear();
-    return;
-}
+        cout << getIndent() << "end:" << endl;
+        cout << getIndent() << "printf(\"End of " << currentFunctionName << "\\n\");" << endl;
+        indentLevel--;
+        cout << getIndent() << "}" << endl;
+
+        // ← YOU ARE HERE: insideFunction==true just closed *some* proctype
+        bool wasMain = (currentFunctionName == "main");
+        insideFunction = false;
+        currentFunctionName.clear();
+
+        if (wasMain) {
+            // only after main, emit init
+            cout << "init {" << "\n"
+                 << "    chan ret_main = [0] of { int };" << "\n"
+                 << "    run main(ret_main);"  << "\n"
+                 << "    ret_main ? tmp;"      << "\n"
+                 << "}"                      << endl;
+        }
+
+        return;
+    }
 
     // 4) Normal block close
     indentLevel--;
