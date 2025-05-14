@@ -1,6 +1,4 @@
 proctype gcd(chan ret_gcd; int x; int y) {
-    chan ret_tmp = [0] of { int };
-    int tmp;
     if
         :: (y == 0) ->
             ret_gcd ! x;

@@ -4,8 +4,8 @@
 #include <string>
 #include <vector>
 #include <sstream>    // ← add this at the top with your other includes
-
-
+#include <unordered_map>
+static const int POOL_SIZE = 9;
 using namespace std;
 
 int indentLevel = 0;
@@ -19,7 +19,11 @@ string getIndent() {
 void parseExpression(const string& line) {
     smatch matches;
     // Track nested loops
+    static bool needsScratchSlots = false;
+
     static vector<string> loopStack;
+    static unordered_map<string,string> ptrTypeMap;
+
 
     static bool insideSwitch = false;
     static string switchVar;
@@ -333,6 +337,8 @@ if (regex_search(trimmed, matches, break_pattern)) {
         cout << getIndent()
              << matches[1] << "* " << matches[2] << ";"
              << endl;
+        ptrTypeMap[matches[2]] = matches[1];
+
         return;
     }
 
@@ -438,9 +444,9 @@ if (regex_search(trimmed, matches, break_pattern)) {
 
         // adjust the magic “9” to however many slots you need
         cout << getIndent()
-             << S << " " << S << "_mem[9];" << endl;
+             << S << " " << S << "_mem[" << POOL_SIZE << "];" << endl;
         cout << getIndent()
-             << "int " << S << "_valid[9];" << endl;
+             << "int " << S << "_valid[" << POOL_SIZE << "];" << endl;
         return;
     }
 
@@ -578,6 +584,24 @@ if (regex_search(trimmed, matches, call_pattern)) {
         return;
     }
 
+    // ── pointer-field assignment: X->f = Y;
+// ── pointer‐field assignment: X->f = Y;  →  Type_mem[X].f = Y;
+static const regex ptr_field_assign(
+  R"(\s*(\w+)->(\w+)\s*=\s*(\w+)\s*;)"
+);
+if (regex_search(trimmed, matches, ptr_field_assign)) {
+    string var   = matches[1];          // “tail”
+    string field = matches[2];          // “next”
+    string rhs   = matches[3];          // “tmp”
+    string type  = ptrTypeMap[var];     // “node”
+    cout << getIndent()
+         << type << "_mem[" << var << "]." << field
+         << " = " << rhs << ";" << endl;
+    return;
+}
+
+
+
     // ── assign from struct‐field or pointer‐field
     static const regex struct_assign(
       R"(\s*(\w+)\s*=\s*(\w+)(?:->|\.)+(\w+)\s*;)"
@@ -640,21 +664,59 @@ if (trimmed.find(',') != string::npos && trimmed.find('=') != string::npos) {
     
 
     // ── malloc/free & pointers (stubs) ─────────────────────────────────
-regex malloc_pat(R"(\s*(\w+)\s*=\s*\(\w*\*\)\s*malloc\((.+)\);)");
-if (regex_search(trimmed, matches, malloc_pat)) {
-    cout << getIndent()
-         << "// " << matches[1]
-         << " = malloc(" << matches[2] << ");  (not supported)"
-         << endl;
-    return;
-}
-regex free_pat(R"(\s*free\s*\(\s*(\w+)\s*\);)");
-if (regex_search(trimmed, matches, free_pat)) {
-    cout << getIndent()
-         << "// free(" << matches[1] << ");  (no-op)"
-         << endl;
-    return;
-}
+    // ── malloc → atomic search for a free slot ───────────────────────────
+    static const regex malloc_pat(
+      R"(\s*(\w+)\s*=\s*(?:\(\s*\w+\s*\*\s*\))?\s*malloc\(\s*(.+)\s*\)\s*;)"
+    );
+    if (regex_search(trimmed, matches, malloc_pat)) {
+needsScratchSlots= true;        // atomic { find i<9 with node_valid[i]==0; mark it; tmp=i }
+        cout << getIndent() << "atomic {" << "\n";
+        indentLevel++;
+        cout << getIndent() << "int malloc_node_c = 1;" << "\n";
+        cout << getIndent() << "do" << "\n";
+        indentLevel++;
+        cout << getIndent() << ":: (malloc_node_c >= "<<POOL_SIZE << ") -> break" << "\n";
+        cout << getIndent() << ":: else ->" << "\n";
+        indentLevel++;
+        cout << getIndent() << "if" << "\n";
+        indentLevel++;
+        cout << getIndent()
+             << ":: (node_valid[malloc_node_c] == 0) ->" << "\n";
+        indentLevel++;
+        cout << getIndent() << "node_valid[malloc_node_c] = 1;" << "\n";
+        cout << getIndent() << "break" << "\n";
+        indentLevel -= 2;
+        cout << getIndent() << ":: else -> malloc_node_c++" << "\n";
+        indentLevel--;
+        cout << getIndent() << "fi" << "\n";
+        indentLevel -= 2;
+        cout << getIndent() << "od;" << "\n";
+        cout << getIndent()
+             << "assert(malloc_node_c < " << POOL_SIZE <<");" << "\n";
+        cout << getIndent()
+             << "tmp = malloc_node_c" << "\n";
+        cout << getIndent() << matches[1] << " = tmp;" << endl;
+        indentLevel--;
+        cout << getIndent() << "};" << endl;
+        return;
+    }
+    // ── free(ptr) → clear that slot ─────────────────────────────────────
+    regex free_pat(R"(\s*free\s*\(\s*(\w+)\s*\);)");
+    if (regex_search(trimmed, matches, free_pat)) {
+        needsScratchSlots = true;
+        cout << getIndent() << "d_step {" << "\n";
+        indentLevel++;
+        cout << getIndent()
+             << "node_valid[" << matches[1] << "] = 0;" << "\n";
+        cout << getIndent()
+             << "node_mem["   << matches[1] << "].next = 0;" << "\n";
+        cout << getIndent()
+             << "node_mem["   << matches[1] << "].value = 0;" << endl;
+        indentLevel--;
+        cout << getIndent() << "};" << endl;
+        return;
+    }
+
 regex ptr_decl(R"(\s*(int|byte|short|bool)\s*\*\s*(\w+)\s*;)");
 if (regex_search(trimmed, matches, ptr_decl)) {
     cout << getIndent()
@@ -673,7 +735,10 @@ static vector<string> returnChannelNames;
 
 
 
-regex func_args_pattern(R"((?:int|void|byte|short|bool)\s+(\w+)\s*\(([^)]*)\)\s*\{)");
+static const regex func_args_pattern(
+   R"((?:int|void|byte|short|bool|struct\s+\w+)\s+(\w+)\s*\(([^)]*)\)\s*\{)"
+);
+
 if (regex_search(trimmed, matches, func_args_pattern)) {
     string func_name = matches[1];
     string args = matches[2];
@@ -688,15 +753,24 @@ if (regex_search(trimmed, matches, func_args_pattern)) {
         if (!arg.empty()) argsList.push_back(arg);
     }
 
-    cout << getIndent() << "proctype " << func_name << "(chan ret_" << func_name;
+    cout << getIndent() << "proctype " << func_name << "(chan in_" << func_name;
     for (const string& argstr : argsList) {
         smatch argMatch;
         if (regex_search(argstr, argMatch, regex(R"((int|byte|bool|short)\s+(\w+))"))) {
             cout << "; " << argMatch[1] << " " << argMatch[2];
         }
+           else if (regex_search(argstr, argMatch, regex(R"(struct\s+(\w+)\s*\*\s*(\w+))"))) {
+        // e.g. struct node *tmp
+        cout << "; " << argMatch[1] << " " << argMatch[2];
+    }
     }
     cout << ") {" << endl;
     indentLevel++;
+    if (needsScratchSlots) {
+        cout << getIndent() << "int malloc_node_c;" << endl;
+        cout << getIndent() << "int new;"             << endl;
+        cout << getIndent() << "int tmp;"             << endl;
+    }
     return;
 }
 
@@ -945,6 +1019,11 @@ if (trimmed == "}") {
         return;
     }
     if (insideFunction) {
+                cout << getIndent()
+             << "in_" << currentFunctionName
+             << " ! 0;" << endl;
+        cout << getIndent()
+             << "goto end;" << endl;
         cout << getIndent() << "end:" << endl;
         cout << getIndent() << "printf(\"End of " << currentFunctionName << "\\n\");" << endl;
         indentLevel--;
@@ -952,6 +1031,7 @@ if (trimmed == "}") {
 
         // ← YOU ARE HERE: insideFunction==true just closed *some* proctype
         bool wasMain = (currentFunctionName == "main");
+        needsScratchSlots = false;
         insideFunction = false;
         currentFunctionName.clear();
 
