@@ -1066,13 +1066,13 @@ int main() {
     }
 
     // Create the Promela output file
-    ofstream outfile("output.spin");
+    ofstream outfile("output.pml");
     if (!outfile.is_open()) {
-        cerr << "Error: Could not create output.spin" << endl;
+        cerr << "Error: Could not create output.pml" << endl;
         return 1;
     }
 
-    // ── Redirect all cout into output.spin ─────────────────────────────────────
+    // ── Redirect all cout into output.pml ─────────────────────────────────────
     auto old_buf = cout.rdbuf(outfile.rdbuf());
 
     string line;
@@ -1088,7 +1088,7 @@ int main() {
     outfile.close();
 
     // Optional: print completion message to console
-    cout << "✅ Translation complete. Output saved to: output.spin" << endl;
+    cout << ":-) Translation complete. Output saved to: output.pml" << endl;
 
     return 0;
 }

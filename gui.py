@@ -181,7 +181,7 @@ class CodeTranslatorApp(ctk.CTk):
         self.highlight_keywords(self.input_box, C_KEYWORDS)
 
 
-        save_output_button = ctk.CTkButton(button_frame, text="💾 Save output.spin", command=self.save_output_file, width=180)
+        save_output_button = ctk.CTkButton(button_frame, text="💾 Save output.pml", command=self.save_output_file, width=180)
         save_output_button.grid(row=0, column=2, padx=10)
 
         # ── Status Bar ──
@@ -200,7 +200,7 @@ class CodeTranslatorApp(ctk.CTk):
         input_path = os.path.join(script_dir, "input.c")
         maincode_path = os.path.join(script_dir, "maincode.cpp")
         exec_path = os.path.join(script_dir, "converter_exec.exe")
-        output_path = os.path.join(script_dir, "output.spin")
+        output_path = os.path.join(script_dir, "output.pml")
 
         code = self.input_box.get("1.0", "end-1c").strip()
         if not code:
@@ -212,9 +212,15 @@ class CodeTranslatorApp(ctk.CTk):
                 f.write(code)
 
             compile_proc = subprocess.run(["g++", maincode_path, "-o", exec_path], capture_output=True, text=True)
-            run_proc = subprocess.run([exec_path], capture_output=True, text=True)
+            run_proc = subprocess.run([exec_path], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
 
-            console_output = compile_proc.stdout + compile_proc.stderr + "\n" + run_proc.stdout + run_proc.stderr
+            console_output = (
+                (compile_proc.stdout or "") +
+                (compile_proc.stderr or "") +
+                "\n" +
+                (run_proc.stdout or "")
+                )
+
             self.console_box.configure(state="normal")
             self.console_box.delete("1.0", "end")
 
@@ -242,13 +248,13 @@ class CodeTranslatorApp(ctk.CTk):
             self.highlight_keywords(self.output_box, PROMELA_KEYWORDS)  # ✅ ← ADD THIS LINE
             self.output_box.configure(state="disabled")
 
-            self.status_label.configure(text="✅ Successfully converted input.c to output.spin")
+            self.status_label.configure(text="✅ Successfully converted input.c to output.pml")
 
         except subprocess.CalledProcessError as e:
             self.status_label.configure(text="❌ Compilation or execution error")
             messagebox.showerror("Execution Error", str(e))
         except FileNotFoundError as e:
-            self.status_label.configure(text="❌ File error: maincode.cpp or output.spin not found")
+            self.status_label.configure(text="❌ File error: maincode.cpp or output.pml not found")
             messagebox.showerror("Missing File", f"Required file not found:\n{e}")
 
     def load_input_file(self):
@@ -267,7 +273,7 @@ class CodeTranslatorApp(ctk.CTk):
             messagebox.showinfo("Nothing to save", "Output is empty.")
             return
 
-        file_path = filedialog.asksaveasfilename(defaultextension=".spin", filetypes=[("Promela Files", "*.spin")])
+        file_path = filedialog.asksaveasfilename(defaultextension=".pml", filetypes=[("Promela Files", "*.pml")])
         if file_path:
             with open(file_path, "w", encoding="utf-8") as f:
                 f.write(output)
